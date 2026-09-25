@@ -167,7 +167,10 @@ jobs:
     name: Deploy to local Docker Engine
     needs: publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, docker]
+
+    # Self-hosted runner trên máy Windows của bạn
+    runs-on: [self-hosted, Windows, X64]
+
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       IMAGE_TAG: latest
@@ -176,35 +179,79 @@ jobs:
       - name: Checkout deployment files
         uses: actions/checkout@v4
 
+      - name: Check Docker Engine
+        shell: powershell
+        run: |
+          docker version
+          docker compose version
+
       - name: Log in to Docker Hub
-        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+        shell: powershell
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          $env:DOCKERHUB_TOKEN | docker login `
+            --username "$env:DOCKERHUB_USERNAME" `
+            --password-stdin
 
       - name: Pull latest image
-        run: docker compose -f docker-compose-prod.yaml pull product-api
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml pull product-api
 
       - name: Deploy production stack
-        run: docker compose -f docker-compose-prod.yaml up -d --remove-orphans
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml up -d --remove-orphans
 
       - name: Wait for production healthcheck
+        shell: powershell
         run: |
-          for attempt in $(seq 1 30); do
-            status=$(docker inspect --format '{{.State.Health.Status}}' product-api-prod 2>/dev/null || true)
-            if [ "$status" = "healthy" ]; then
+          for ($attempt = 1; $attempt -le 30; $attempt++) {
+
+            $status = docker inspect `
+              --format '{{.State.Health.Status}}' `
+              product-api-prod 2>$null
+
+            Write-Host "Attempt $attempt - Product API status: $status"
+
+            if ($status -eq "healthy") {
+              Write-Host "Product API is healthy"
               exit 0
-            fi
-            if [ "$status" = "unhealthy" ]; then
-              docker compose -f docker-compose-prod.yaml logs product-api
+            }
+
+            if ($status -eq "unhealthy") {
+              Write-Host "Product API is unhealthy"
+
+              docker compose `
+                -f docker-compose-prod.yaml `
+                logs product-api
+
               exit 1
-            fi
-            sleep 2
-          done
+            }
+
+            Start-Sleep -Seconds 2
+          }
+
           docker compose -f docker-compose-prod.yaml ps
           docker compose -f docker-compose-prod.yaml logs product-api
+
           exit 1
 
       - name: Verify production endpoint
-        run: curl --fail --silent --show-error http://127.0.0.1:3000/health
+        shell: powershell
+        run: |
+          Invoke-WebRequest `
+            -Uri "http://127.0.0.1:3000/health" `
+            -UseBasicParsing
+
+      - name: Show production containers
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml ps
 
       - name: Log out from Docker Hub
         if: always()
-        run: docker logout
+        shell: powershell
+        run: |
+          docker logout
