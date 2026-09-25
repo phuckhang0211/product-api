@@ -1,0 +1,123 @@
+name: Product API Production CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  crud-integration-test:
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      MONGO_URI: mongodb://127.0.0.1:27017/product_api_ci
+      PORT: 3000
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check server.js
+          node --check routes/productRoutes.js
+          node --check models/Product.js
+
+      - name: Start Product API
+        run: |
+          node server.js > server.log 2>&1 &
+          echo $! > server.pid
+
+      - name: Wait for API health check
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/health > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat server.log
+          exit 1
+
+      - name: Test CRUD endpoints
+        run: |
+          node <<'EOF'
+          const baseUrl = "http://127.0.0.1:3000";
+          const product = {
+            pid: Date.now(),
+            pname: "CI product",
+            price: 99.99,
+            quantity: 10,
+          };
+
+          async function request(path, options, expectedStatus) {
+            const response = await fetch(`${baseUrl}${path}`, {
+              headers: { "content-type": "application/json" },
+              ...options,
+            });
+            const body = await response.json();
+
+            if (response.status !== expectedStatus) {
+              throw new Error(
+                `${options?.method ?? "GET"} ${path}: expected ${expectedStatus}, got ${response.status}: ${JSON.stringify(body)}`,
+              );
+            }
+
+            return body;
+          }
+
+          const created = await request(
+            "/api/products",
+            { method: "POST", body: JSON.stringify(product) },
+            201,
+          );
+          if (created.pid !== product.pid) throw new Error("POST returned the wrong product");
+
+          const products = await request("/api/products", undefined, 200);
+          if (!products.some((item) => item.pid === product.pid)) {
+            throw new Error("GET collection did not return the created product");
+          }
+
+          const updated = await request(
+            `/api/products/${product.pid}`,
+            {
+              method: "PUT",
+              body: JSON.stringify({ pname: "Updated CI product", price: 109.99, quantity: 8 }),
+            },
+            200,
+          );
+          if (updated.pname !== "Updated CI product" || updated.quantity !== 8) {
+            throw new Error("PUT did not update the product");
+          }
+
+          await request(`/api/products/${product.pid}`, { method: "DELETE" }, 200);
+          await request(`/api/products/${product.pid}`, undefined, 404);
+          console.log("CRUD integration test passed");
+          EOF
+
+      - name: Stop Product API
+        if: always()
+        run: kill "$(cat server.pid)" 2>/dev/null || true
+
+      - name: Print API logs on failure
+        if: failure()
+        run: cat server.log
