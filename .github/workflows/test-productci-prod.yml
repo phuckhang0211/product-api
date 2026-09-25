@@ -162,3 +162,49 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy-local:
+    name: Deploy to local Docker Engine
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, docker]
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      IMAGE_TAG: latest
+
+    steps:
+      - name: Checkout deployment files
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Pull latest image
+        run: docker compose -f docker-compose-prod.yaml pull product-api
+
+      - name: Deploy production stack
+        run: docker compose -f docker-compose-prod.yaml up -d --remove-orphans
+
+      - name: Wait for production healthcheck
+        run: |
+          for attempt in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' product-api-prod 2>/dev/null || true)
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker compose -f docker-compose-prod.yaml logs product-api
+              exit 1
+            fi
+            sleep 2
+          done
+          docker compose -f docker-compose-prod.yaml ps
+          docker compose -f docker-compose-prod.yaml logs product-api
+          exit 1
+
+      - name: Verify production endpoint
+        run: curl --fail --silent --show-error http://127.0.0.1:3000/health
+
+      - name: Log out from Docker Hub
+        if: always()
+        run: docker logout

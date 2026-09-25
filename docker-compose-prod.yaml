@@ -1,0 +1,42 @@
+services:
+  mongodb:
+    image: mongo:8
+    container_name: product-api-prod-mongodb
+    restart: unless-stopped
+    volumes:
+      - mongodb_prod_data:/data/db
+    healthcheck:
+      test:
+        ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  product-api:
+    image: ${DOCKERHUB_USERNAME:khangho3571}/product-api:${IMAGE_TAG:-latest}
+    container_name: product-api-prod
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/product_api
+      PORT: 3000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000/health').then(response => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  mongodb_prod_data:
