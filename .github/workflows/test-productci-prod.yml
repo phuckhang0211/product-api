@@ -162,74 +162,74 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-deploy-local:
-  name: Deploy to local Docker Engine
-  needs: publish
-  if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  deploy-local:
+    name: Deploy to local Docker Engine
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-  runs-on: [self-hosted, Windows, X64]
+    runs-on: [self-hosted, Windows, X64]
 
-  env:
-    DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-    IMAGE_TAG: latest
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      IMAGE_TAG: latest
 
-  steps:
-    - name: Checkout deployment files
-      uses: actions/checkout@v4
+    steps:
+      - name: Checkout deployment files
+        uses: actions/checkout@v4
 
-    - name: Check Docker Engine
-      shell: powershell
-      run: |
-        docker version
-        docker compose version
+      - name: Check Docker Engine
+        shell: powershell
+        run: |
+          docker version
+          docker compose version
 
-    - name: Pull latest image
-      shell: powershell
-      run: |
-        docker compose -f docker-compose-prod.yaml pull product-api
+      - name: Pull latest image
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml pull product-api
 
-    - name: Deploy production stack
-      shell: powershell
-      run: |
-        docker compose -f docker-compose-prod.yaml up -d --remove-orphans
+      - name: Deploy production stack
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml up -d --remove-orphans
 
-    - name: Wait for production healthcheck
-      shell: powershell
-      run: |
-        for ($attempt = 1; $attempt -le 30; $attempt++) {
+      - name: Wait for production healthcheck
+        shell: powershell
+        run: |
+          for ($attempt = 1; $attempt -le 30; $attempt++) {
 
-          $status = docker inspect `
-            --format '{{.State.Health.Status}}' `
-            product-api-prod 2>$null
+            $status = docker inspect `
+              --format '{{.State.Health.Status}}' `
+              product-api-prod 2>$null
 
-          Write-Host "Attempt $attempt - Product API status: $status"
+            Write-Host "Attempt $attempt - Product API status: $status"
 
-          if ($status -eq "healthy") {
-            Write-Host "Product API is healthy"
-            exit 0
+            if ($status -eq "healthy") {
+              Write-Host "Product API is healthy"
+              exit 0
+            }
+
+            if ($status -eq "unhealthy") {
+              Write-Host "Product API is unhealthy"
+              docker compose -f docker-compose-prod.yaml logs product-api
+              exit 1
+            }
+
+            Start-Sleep -Seconds 2
           }
 
-          if ($status -eq "unhealthy") {
-            Write-Host "Product API is unhealthy"
-            docker compose -f docker-compose-prod.yaml logs product-api
-            exit 1
-          }
+          docker compose -f docker-compose-prod.yaml ps
+          docker compose -f docker-compose-prod.yaml logs product-api
+          exit 1
 
-          Start-Sleep -Seconds 2
-        }
+      - name: Verify production endpoint
+        shell: powershell
+        run: |
+          Invoke-WebRequest `
+            -Uri "http://127.0.0.1:3000/health" `
+            -UseBasicParsing
 
-        docker compose -f docker-compose-prod.yaml ps
-        docker compose -f docker-compose-prod.yaml logs product-api
-        exit 1
-
-    - name: Verify production endpoint
-      shell: powershell
-      run: |
-        Invoke-WebRequest `
-          -Uri "http://127.0.0.1:3000/health" `
-          -UseBasicParsing
-
-    - name: Show production containers
-      shell: powershell
-      run: |
-        docker compose -f docker-compose-prod.yaml ps
+      - name: Show production containers
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml ps
