@@ -1,8 +1,11 @@
-name: Product API Production CI
+name: Product API Production CI/CD
 
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   crud-integration-test:
@@ -50,7 +53,7 @@ jobs:
       - name: Wait for API health check
         run: |
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:3000/health > /dev/null; then
+            if curl --fail --silent --show-error http://127.0.0.1:3000/health | grep -q '"status":"OK"'; then
               exit 0
             fi
             sleep 2
@@ -121,3 +124,41 @@ jobs:
       - name: Print API logs on failure
         if: failure()
         run: cat server.log
+
+  publish:
+    name: Publish image to Docker Hub
+    needs: crud-integration-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set Docker image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/product-api
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
